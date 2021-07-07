@@ -22,13 +22,14 @@
 /**
  * Reads the current temperature
  */
-float SHT1x::readTemperature(const TempUnit unit, const bool checkSum)
+int SHT1x::readTemperature(float *_temperature,const TempUnit unit, const bool checkSum)
 {
   int _val;                // Raw value returned from sensor
-  float _temperature;      // Temperature derived from raw value
+  //float _temperature;      // Temperature derived from raw value
+  int error = 0;
 
   // Conversion coefficients from SHT15 datasheet
-  constexpr  float D1 = -40.0;  // for 14 Bit @ 5V
+  constexpr  float D1 = -40.1;  // for 14 Bit @ 5V
   float D2;
   if ( unit == TempUnit::C) {
     D2 = 0.01;
@@ -40,7 +41,11 @@ float SHT1x::readTemperature(const TempUnit unit, const bool checkSum)
   constexpr uint8_t  _gTempCmd  = 0b00000011;
   transStart();
   writeByte(_gTempCmd);
-  waitForResult();
+  if (waitForResult() == -1)
+  {
+    return -1;
+  }
+  
   _val = readByte(true);
   _val = _val << 8;
   _val |= readByte(checkSum);
@@ -50,29 +55,31 @@ float SHT1x::readTemperature(const TempUnit unit, const bool checkSum)
     crc = crc8(_val, 16, crc);
     crc = reverseByte(crc);
     if (_crc != crc) {
-      Serial.println(F("SHT1x checksum error"));
+      // Serial.println(F("SHT1x checksum error"));
+      error = -2;
     }
   }
   // Convert raw value to degrees Celsius
-  _temperature = (_val * D2) + D1;
+  *_temperature = ((float)_val * D2) + D1;
 
-  return (_temperature);
+  return (error);
 }
 
 /**
  * Reads current temperature-corrected relative humidity
  */
-float SHT1x::readHumidity(const bool checkSum)
+int SHT1x::readHumidity(float *_humidity,const bool checkSum)
 {
   int _val;                    // Raw humidity value returned from sensor
+  int error = 0;  
   float _linearHumidity;       // Humidity with linear correction applied
-  float _correctedHumidity;    // Temperature-corrected humidity
+  //float _correctedHumidity;    // Temperature-corrected humidity
   float _temperature;          // Raw temperature value
 
   // Conversion coefficients from SHT15 datasheet
-  constexpr  float C1 = -4.0;       // for 12 Bit
-  constexpr  float C2 =  0.0405;    // for 12 Bit
-  constexpr  float C3 = -0.0000028; // for 12 Bit
+  constexpr  float C1 = -2.0468;       // for 12 Bit
+  constexpr  float C2 =  0.0367;    // for 12 Bit
+  constexpr  float C3 = -0.0000015955; // for 12 Bit
   constexpr  float T1 =  0.01;      // for 14 Bit @ 5V
   constexpr  float T2 =  0.00008;   // for 14 Bit @ 5V
 
@@ -82,7 +89,11 @@ float SHT1x::readHumidity(const bool checkSum)
   // Fetch the value from the sensor
   transStart();
   writeByte(_gHumidCmd);
-  waitForResult();
+  if (waitForResult() == -1)
+  {
+    return -1;
+  }
+  
   _val = readByte(true);
   _val = _val << 8;
   _val |= readByte(checkSum);
@@ -92,7 +103,8 @@ float SHT1x::readHumidity(const bool checkSum)
     crc = crc8(_val, 16, crc);
     crc = reverseByte(crc);
     if (_crc != crc) {
-      Serial.println(F("SHT1x checksum error"));
+      error = -2;
+      //Serial.println(F("SHT1x checksum error"));
     }
   }
 
@@ -100,12 +112,12 @@ float SHT1x::readHumidity(const bool checkSum)
   _linearHumidity = C1 + C2 * _val + C3 * _val * _val;
 
   // Get current temperature for humidity correction
-  _temperature = readTemperature(TempUnit::C);
+  readTemperature(&_temperature,TempUnit::C);
 
   // Correct humidity value for current temperature
-  _correctedHumidity = (_temperature - 25.0 ) * (T1 + T2 * _val) + _linearHumidity;
+  *_humidity = (_temperature - 25.0 ) * (T1 + T2 * _val) + _linearHumidity;
 
-  return (_correctedHumidity);
+  return (error);
 }
 
 /**
@@ -145,8 +157,9 @@ void SHT1x::softReset() {
 /*
 * read status register and update crc_init
 */
-uint8_t SHT1x::readStatusReg(const bool checkSum=true) {
+uint8_t SHT1x::readStatusReg(const bool checkSum) {
   constexpr uint8_t cmd = 0b00000111;
+  int error = 0;
   transStart();
   writeByte(cmd);
   uint8_t _val = readByte(checkSum);
@@ -157,7 +170,8 @@ uint8_t SHT1x::readStatusReg(const bool checkSum=true) {
     crc = crc8(_val, 8, crc);
     crc = reverseByte(crc);
     if (_crc != crc) {
-      Serial.println(F("SHT1x checksum error"));
+      //Serial.println(F("SHT1x checksum error"));
+      error = 2;
     }
   }
   return _val;
@@ -220,9 +234,10 @@ void SHT1x::transStart() {
 /**
  *  write one byte data to sht
  */
-void SHT1x::writeByte(const uint8_t data)
+int SHT1x::writeByte(const uint8_t data)
 {
   int ack;
+  int error = 0;
 
   pinMode(_dataPin, OUTPUT);
 
@@ -234,17 +249,21 @@ void SHT1x::writeByte(const uint8_t data)
   digitalWrite(_clockPin, HIGH);
   ack = digitalRead(_dataPin);
   if (ack != LOW) {
-    Serial.println(F("SHT1x send command error"));
+    //Serial.println(F("SHT1x send command error"));
+    error = -1;  
   }
   digitalWrite(_clockPin, LOW);
+
+  return error;
 }
 
 /**
  *  wait for measurement
  */
-void SHT1x::waitForResult()
+int SHT1x::waitForResult()
 {
   int ack;
+  int error = 0;
   pinMode(_dataPin, INPUT);
 
   for(int i= 0; i < 100; ++i)
@@ -257,8 +276,10 @@ void SHT1x::waitForResult()
   }
 
   if (ack == HIGH) {
-    Serial.println(F("SHT1x wait result timeout")); // Can't do serial stuff here, need another way of reporting errors
+    // Serial.println(F("SHT1x wait result timeout")); // Can't do serial stuff here, need another way of reporting errors
+    error = -1; //error de timeout
   }
+  return error;
 }
 
 /**
