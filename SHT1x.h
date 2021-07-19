@@ -34,8 +34,8 @@ class SHT1x
       connectionReset();
       readStatusReg(true);
     }
-    float readHumidity(const bool checkSum=true);
-    float readTemperature(const TempUnit unit,const bool checkSum=true);
+    int readHumidity(float *_humidity,const bool checkSum=true);
+    int readTemperature(float *_temperature,const TempUnit unit,const bool checkSum=true);
     void connectionReset();
     void softReset();
     uint8_t readStatusReg(const bool checkSum=true);
@@ -46,9 +46,9 @@ class SHT1x
     uint8_t crc_init;
     int shiftIn(const int _numBits);
     void transStart();
-    void writeByte(const uint8_t data);
+    int writeByte(const uint8_t data);
     int readByte(const bool ack);
-    void waitForResult();
+    int waitForResult();
     uint8_t crc8(const unsigned int data, const int size, const uint8_t init=0);
     uint8_t reverseByte(const uint8_t data);
 };
