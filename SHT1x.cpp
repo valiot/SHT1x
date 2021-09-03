@@ -18,6 +18,34 @@
 
 #include "SHT1x.h"
 
+void pinMode2(uint8_t pin, uint8_t mode)
+{
+	const struct digital_pin_bitband_and_config_table_struct *p;
+
+	if (pin >= CORE_NUM_DIGITAL) return;
+	p = digital_pin_to_info_PGM + pin;
+	if (mode == OUTPUT || mode == OUTPUT_OPENDRAIN) {
+		*(p->reg + 1) |= p->mask; // TODO: atomic
+		if (mode == OUTPUT) {
+			*(p->pad) = IOMUXC_PAD_DSE(7);
+		} else { // OUTPUT_OPENDRAIN
+			*(p->pad) = IOMUXC_PAD_DSE(7) | IOMUXC_PAD_ODE;
+		}
+	} else {
+		*(p->reg + 1) &= ~(p->mask); // TODO: atomic
+		if (mode == INPUT) {
+			*(p->pad) = IOMUXC_PAD_DSE(7);
+		} else if (mode == INPUT_PULLUP) {
+			*(p->pad) = IOMUXC_PAD_DSE(7) | IOMUXC_PAD_PKE | IOMUXC_PAD_PUE | IOMUXC_PAD_PUS(3) | IOMUXC_PAD_HYS;
+		} else if (mode == INPUT_PULLDOWN) {
+			*(p->pad) = IOMUXC_PAD_DSE(7) | IOMUXC_PAD_PKE | IOMUXC_PAD_PUE | IOMUXC_PAD_PUS(0) | IOMUXC_PAD_HYS;
+		} else { // INPUT_DISABLE
+			*(p->pad) = IOMUXC_PAD_DSE(7) | IOMUXC_PAD_HYS;
+		}
+	}
+	*(p->mux) = 5 | 0x10;
+}
+
 /* ================  Public methods ================ */
 /**
  * Reads the current temperature
@@ -30,7 +58,7 @@ int SHT1x::readTemperature(float *_temperature,const TempUnit unit, const bool c
 
   // Conversion coefficients from SHT15 datasheet
   constexpr  float D1 = -40.1;  // for 14 Bit @ 5V
-  float D2;
+  float D2 = 0.01;
   if ( unit == TempUnit::C) {
     D2 = 0.01;
   } else if( unit == TempUnit::F) {
@@ -128,7 +156,7 @@ int SHT1x::readHumidity(float *_humidity,const bool checkSum)
 * SCK : __| |__| |__| |__| |__| |__| |__| |__| |__| |______|   |___|   |______
 */
 void SHT1x::connectionReset() {
-  pinMode(_dataPin, OUTPUT);
+  pinMode2(_dataPin, OUTPUT);
 
   // initial state
   digitalWrite(_dataPin, HIGH);
@@ -159,7 +187,6 @@ void SHT1x::softReset() {
 */
 uint8_t SHT1x::readStatusReg(const bool checkSum) {
   constexpr uint8_t cmd = 0b00000111;
-  int error = 0;
   transStart();
   writeByte(cmd);
   uint8_t _val = readByte(checkSum);
@@ -171,7 +198,7 @@ uint8_t SHT1x::readStatusReg(const bool checkSum) {
     crc = reverseByte(crc);
     if (_crc != crc) {
       //Serial.println(F("SHT1x checksum error"));
-      error = 2;
+      _val = -2;
     }
   }
   return _val;
@@ -198,7 +225,7 @@ int SHT1x::shiftIn(const int _numBits)
 {
   int ret = 0;
   int i;
-  pinMode(_dataPin, INPUT);
+  pinMode2(_dataPin, INPUT);
   for (i=0; i<_numBits; ++i)
   {
      digitalWrite(_clockPin, HIGH);
@@ -220,7 +247,7 @@ int SHT1x::shiftIn(const int _numBits)
 * SCK : ___|   |___|   |______
 */
 void SHT1x::transStart() {
-  pinMode(_dataPin, OUTPUT);
+  pinMode2(_dataPin, OUTPUT);
   digitalWrite(_dataPin, HIGH);
   digitalWrite(_clockPin, HIGH);
   digitalWrite(_dataPin, LOW);
@@ -230,32 +257,39 @@ void SHT1x::transStart() {
   digitalWrite(_clockPin, LOW);
 }
 
-
-/**
- *  write one byte data to sht
- */
-int SHT1x::writeByte(const uint8_t data)
+int SHT1x::writeByte(uint8_t value)
 {
-  int ack;
   int error = 0;
+	uint8_t ack = 0;
+	uint8_t mask = 0x80;
+	pinMode2(_dataPin, OUTPUT);					//DATA_TRIS = 0;
 
-  pinMode(_dataPin, OUTPUT);
+	for (uint8_t i = 8; i > 0; i--)
+	{
+		if (value & mask){
+			digitalWrite(_dataPin, HIGH);		// DATA_WR=1;     //masking value with mask , write to SENSI-BUS
+		}else{
+			digitalWrite(_dataPin, LOW); 		//DATA_WR=0;
+		}
+		delayMicroseconds(2);
+		digitalWrite(_clockPin, HIGH);			//SCK=1;          //clk for SENSI-BUS
+		delayMicroseconds(5);            		//pulse-width approx. 5 us
+		digitalWrite(_clockPin, LOW);			//SCK=0;
+		delayMicroseconds(1);
+		mask >>= 1;                     // Shift mask for next data bit
+	}
+	pinMode2(_dataPin, INPUT);					//DATA_TRIS=1;    //release DATA-line, let SHT11 sensor controls DATA line
+	digitalWrite(_clockPin, HIGH);				//SCK=1;
+	delayMicroseconds(5);						//clk #9 for ack
 
-  // The command (3 msb are address and must be 000, and last 5 bits are command)
-  shiftOut(_dataPin, _clockPin, MSBFIRST, data);
-
-  // Verify we get the correct ack
-  pinMode(_dataPin, INPUT);
-  digitalWrite(_clockPin, HIGH);
-  ack = digitalRead(_dataPin);
+	ack = digitalRead(_dataPin);
   if (ack != LOW) {
     //Serial.println(F("SHT1x send command error"));
     error = -1;  
   }
-  digitalWrite(_clockPin, LOW);
-
-  return error;
-}
+	digitalWrite(_clockPin, LOW);				//SCK=0;
+	return error;   
+}                     	
 
 /**
  *  wait for measurement
@@ -264,7 +298,7 @@ int SHT1x::waitForResult()
 {
   int ack;
   int error = 0;
-  pinMode(_dataPin, INPUT);
+  pinMode2(_dataPin, INPUT);
 
   for(int i= 0; i < 100; ++i)
   {
@@ -290,7 +324,7 @@ int SHT1x::readByte(const bool ack)
   int val = shiftIn(8);
   
   // Send the required ack
-  pinMode(_dataPin, OUTPUT);
+  pinMode2(_dataPin, OUTPUT);
   digitalWrite(_dataPin, !ack);
   digitalWrite(_clockPin, HIGH);
   digitalWrite(_clockPin, LOW);
